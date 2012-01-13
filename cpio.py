@@ -35,14 +35,10 @@ import struct
 __all__ = ['is_cpioarchive', 'CpioArchive', 'CpioEntry']
 
 
-MAGIC_BIN = 070707
-MAGIC_OLD = '070707'
-MAGIC_NEW = '070701'
-MAGIC_CRC = '070702'
-
-_STRUCT_NEW = '6s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s'
-_STRUCT_OLD = '6s 6s 6s 6s 6s 6s 6s 6s 11s 6s 11s'
-_STRUCT_BIN = 'H H H H H H H H H H H H H'
+BIN_FORMAT = 070707
+OLD_FORMAT = '070707'
+NEW_FORMAT = '070701'
+CRC_FORMAT = '070702'
 
 
 def is_cpioarchive(self, path):
@@ -50,20 +46,17 @@ def is_cpioarchive(self, path):
     with io.open(path, 'rb') as fileobj:
         magic = fileobj.read(6)
 
-    if magic in (MAGIC_NEW, MAGIC_CRC):
+    if magic in (NEW_FORMAT, CRC_FORMAT, OLD_FORMAT):
         return True
-    else:
-        return False
+    if struct.unpack('H', magic[:2])[0] == BIN_FORMAT:
+        return True
+
+    return False
 
 
 def checksum32(bytes):
     """Return a 32-bit unsigned sum of *bytes*."""
     return sum(ord(byte) for byte in bytes) & 0xFFFFFFFF
-
-
-def hex8(integer):
-    """Return an 8-byte hex string from *integer*."""
-    return hex(integer)[2:].rjust(8, '0')
 
 
 class Error(Exception):
@@ -82,63 +75,117 @@ class ChecksumError(HeaderError):
 
 
 class CpioEntry(object):
-    """."""
-#    __slots__ = [
-#        '_cpio',
-#        '_position',
-#        '_offset',
-#        'fileobj',
-#        'c_magic',
-#        'c_ino',
-#        'c_mode',
-#        'c_uid',
-#        'c_gid',
-#        'c_nlink',
-#        'c_mtime',
-#        'c_filesize',
-#        'c_dev',
-#        'c_rdev',
-#        'c_namesize',
-#        'c_check',
-#        'name']
+    """
+    CpioEntry provides a read-only file-like object, unified to represent
+    different cpio formats.
+    """
 
     def __init__(self, cpio, path=None):
         """."""
-        self._cpio = cpio
         self.fileobj = cpio.fileobj
-        self.offset = 0
+        self.offset = self.fileobj.tell()
         self._position = 0
 
-        self.c_ino = 0
-        """Inode number on disk."""
-        self.c_mode = 0
-        """Inode protection mode."""
-        self.c_uid = 0
-        """User id of the owner."""
-        self.c_gid = 0
-        """Group id of the owner."""
-        self.c_nlink = 0
-        """Number of links to the inode."""
-        self.c_mtime = 0
-        """Time of last modification."""
-        self.c_filesize = 0
-        """Size of the file data in bytes.."""
-        self.c_dev = 0
+        self.magic = NEW_FORMAT
+        """Magic number of the cpio format."""
+        self.dev = 0
         """Number of the device the inode resides on."""
-        self.c_rdev = 0
+        self.ino = 0
+        """Inode number on disk."""
+        self.mode = 0
+        """Inode protection mode."""
+        self.uid = 0
+        """User id of the owner."""
+        self.gid = 0
+        """Group id of the owner."""
+        self.nlink = 0
+        """Number of links to the inode."""
+        self.mtime = 0
+        """Time of last modification."""
+        self.rdev = 0
         """Number of the device type."""
+        self.size = 0
+        """Size of the file data in bytes.."""
+        self.check = 0
+        """32-bit checksum of the file data."""
+
         self.name = 'TRAILER!!!'
         """Pathname of the entry."""
 
-    @property
-    def c_magic(self):
-        """Magic number of the cpio format."""
-        return self._cpio.format
+        if path:
+            pstat = os.lstat(path)
 
-    @property
-    def c_namesize(self):
-        """Name size in bytes, including the trailing NUL byte."""
-        return len(self.name) + 1
+            self.dev = pstat.st_dev
+            self.ino = pstat.st_ino
+            self.mode = pstat.st_mode
+            self.uid = pstat.st_uid
+            self.gid = pstat.st_gid
+            self.nlink = pstat.st_nlink
+            self.mtime = pstat.st_mtime
+            self.size = pstat.st_size
+            self.name = path
+
+            # not available on non-linux systems
+            if hasattr(pstat, 'st_rdev'):
+                self.rdev = pstat.st_rdev
+
+    def __str__(self):
+        """."""
+        if self.magic in (NEW_FORMAT, CRC_FORMAT):
+            hpad = (4 - (111 + len(self.name)) % 4) % 4
+
+            return ''.join([
+                self.magic,
+                '{:0>8x}'.format(self.ino),
+                '{:0>8x}'.format(self.mode),
+                '{:0>8x}'.format(self.uid),
+                '{:0>8x}'.format(self.gid),
+                '{:0>8x}'.format(self.nlink),
+                '{:0>8x}'.format(self.mtime),
+                '{:0>8x}'.format(self.size),
+                '{:0>8x}'.format(os.major(self.dev)),
+                '{:0>8x}'.format(os.minor(self.dev)),
+                '{:0>8x}'.format(os.major(self.rdev)),
+                '{:0>8x}'.format(os.minor(self.rdev)),
+                '{:0>8x}'.format(len(self.name) + 1),
+                '{:0>8x}'.format(self.check),
+                self.name, '\0',
+                ''.rjust(hpad, '\0')])
+        elif self.magic == OLD_FORMAT:
+            return ''.join([
+                self.format,
+                '{:0>6o}'.format(self.dev),
+                '{:0>6o}'.format(self.ino),
+                '{:0>6o}'.format(self.mode),
+                '{:0>6o}'.format(self.uid),
+                '{:0>6o}'.format(self.gid),
+                '{:0>6o}'.format(self.nlink),
+                '{:0>6o}'.format(self.rdev),
+                '{:0>11o}'.format(self.mtime),
+                '{:0>6o}'.format(len(self.name) + 1),
+                '{:0>11o}'.format(self.size),
+                self.name, '\0'])
+        elif self.magic == BIN_FORMAT:
+            hpad = (2 - (27 + len(self.name)) % 2) % 2
+
+            return ''.join([
+                struct.pack(
+                    'H H H H H H H H H H H H H',
+                    self.magic,
+                    self.dev,
+                    self.ino,
+                    self.mode,
+                    self.uid,
+                    self.gid,
+                    self.nlink,
+                    self.rdev,
+                    self.mtime / 256,
+                    self.mtime % 256,
+                    len(self.name) + 1,
+                    self.size / 256,
+                    self.size % 256),
+                self.name, '\0',
+                ''.rjust(hpad, '\0')])
 
     #FIXME: test
     def read(self, n=-1):
@@ -148,12 +195,12 @@ class CpioEntry(object):
             self.fileobj.seek(self.offset + self._position)
 
         # return '' if at EOF for this object
-        if self.fileobj.tell() == self.offset + self.c_filesize:
+        if self.fileobj.tell() == self.offset + self.size:
             return ''
 
         #
-        if n < 0 or n >= (self.c_filesize - self._position):
-            data = self.fileobj.read(self.c_filesize - self._position)
+        if n < 0 or n >= (self.size - self._position):
+            data = self.fileobj.read(self.size - self._position)
         else:
             data = self.fileobj.read(n)
 
@@ -174,28 +221,27 @@ class CpioEntry(object):
         elif whence == 2:
             self._position -= offset
 
-        self._position = min(max(0, self._position), self.c_filesize)
+        self._position = min(max(0, self._position), self.size)
 
     def tell(self):
         """Return the current stream position."""
         return self._position
 
     def _ino(self):
-        return (self.c_ino, self.c_dev)
+        return (self.ino, self.dev)
 
     def _ishardlink(self):
-        if self.c_nlink > 1 and not stat.S_ISDIR(self.c_mode):
+        if self.nlink > 1 and not stat.S_ISDIR(self.mode):
             return True
 
 
 class CpioArchive(object):
     """
     CpioArchive is a file-like object that acts as a container of CpioEntry
-    objects, which in turn allow read and/or write access to the actual file
-    data.
+    objects, which in turn allow read or write access to the actual file data.
     """
 
-    def __init__(self, path=None, mode=None, fileobj=None, format=MAGIC_NEW):
+    def __init__(self, path=None, mode=None, fileobj=None, format=NEW_FORMAT):
         """Constructor for the CpioArchive class.
 
         Either *fileobj* or *path* must be given a non-trivial value.
@@ -207,7 +253,7 @@ class CpioArchive(object):
         The *mode* argument must be either 'rb' or 'wb'.  The default is 'rb'
         either if *path* is given or if *fileobj* is read-write.
 
-        The *checksum* argument'
+        The *format* argument'
         """
         if not path and not fileobj:
             raise ValueError('either fileobj or path must be given')
@@ -216,32 +262,13 @@ class CpioArchive(object):
             raise ValueError('mode must be either "rb" or "wb".')
 
         self._entries = []
-
         self.fileobj = fileobj or io.open(path, mode or 'rb')
         self.format = self._read_magic() or format
         """."""
 
         # If the file object is readable and a known format, read it
         if self.fileobj.readable():
-            hardlinks = []
-
-            entry = self._read()
-
-            while entry.name != 'TRAILER!!!':
-                self._entries.append(entry)
-                entry = self._read()
-
-                if entry._ishardlink() and entry.c_filesize == 0:
-                    hardlinks.append(entry)
-
-            #FIXME ### Hardlinks
-            for link in hardlinks:
-                for entry in self:
-                    if entry._ino() == link._ino() and entry.c_filesize > 0:
-                        link.offset = entry.offset
-                        link.c_filesize = entry.c_filesize
-                        link.c_nlink = 1
-                        break
+            self._read_archive()
 
     def __enter__(self):
         return self
@@ -257,167 +284,140 @@ class CpioArchive(object):
         s = repr(self.fileobj)
         return '<cpio ' + s[1:-1] + ' ' + hex(id(self)) + '>'
 
+    def _read_archive(self):
+        """."""
+        hardlinks = []
+
+        entry = self._read_entry()
+
+        while entry.name != 'TRAILER!!!':
+            self._entries.append(entry)
+            entry = self._read_entry()
+
+            if entry._ishardlink() and entry.size == 0:
+                hardlinks.append(entry)
+
+        #FIXME ### Hardlinks
+        for link in hardlinks:
+            for entry in self:
+                if entry._ino() == link._ino() and entry.size > 0:
+                    link.offset = entry.offset
+                    link.size = entry.size
+                    link.nlink = 1
+                    break
+
+    def _read_entry(self):
+        """."""
+        entry = CpioEntry(self)
+        hdr = self.struct.unpack(self.fileobj.read(self.struct.size))
+
+        if self.format in (NEW_FORMAT, CRC_FORMAT):
+            entry.magic = hdr[0]
+            entry.ino = int(hdr[1], 16)
+            entry.mode = int(hdr[2], 16)
+            entry.uid = int(hdr[3], 16)
+            entry.gid = int(hdr[4], 16)
+            entry.nlink = int(hdr[5], 16)
+            entry.mtime = int(hdr[6], 16)
+            entry.size = int(hdr[7], 16)
+            entry.dev = os.makedev(int(hdr[8], 16), int(hdr[9], 16))
+            entry.rdev = os.makedev(int(hdr[10], 16), int(hdr[11], 16))
+            namesize = int(hdr[12], 16)
+            entry.check = int(hdr[13], 16)
+
+            # the header is NUL padded to a multiple of 4-bytes
+            hpad = (4 - (110 + namesize) % 4) % 4
+            dpad = (4 - entry.size % 4) % 4
+        elif self.format == OLD_FORMAT:
+            entry.magic = hdr[0]
+            entry.dev = int(hdr[1], 8)
+            entry.ino = int(hdr[2], 8)
+            entry.mode = int(hdr[3], 8)
+            entry.uid = int(hdr[4], 8)
+            entry.gid = int(hdr[5], 8)
+            entry.nlink = int(hdr[6], 8)
+            entry.rdev = int(hdr[7], 8)
+            entry.mtime = int(hdr[8], 8)
+            namesize = int(hdr[9], 8)
+            entry.size = int(hdr[10], 8)
+
+            hpad, dpad = 0, 0
+        elif self.format == BIN_FORMAT:
+            entry.magic = hdr[0]
+            entry.dev = hdr[1]
+            entry.ino = hdr[2]
+            entry.mode = hdr[3]
+            entry.uid = hdr[4]
+            entry.gid = hdr[5]
+            entry.nlink = hdr[6]
+            entry.rdev = hdr[7]
+            entry.mtime = hdr[8] * 256 + hdr[9]
+            namesize = hdr[10]
+            entry.size = hdr[11] * 256 + hdr[12]
+
+            # the header is NUL padded to a multiple of 2-bytes
+            hpad = (2 - (26 + namesize) % 2) % 2
+            dpad = (2 - entry.size % 2) % 2
+
+        # Read the entry name; exclude the trailing NUL byte and padding
+        entry.name = self.fileobj.read(namesize + hpad)[:-1 + -hpad]
+        entry.offset = self.fileobj.tell()
+
+        # Checksum regular files, otherwise read past the data and return
+        if self.format == CRC_FORMAT and stat.S_ISREG(entry.mode):
+            data = self.fileobj.read(entry.size + dpad)[:-dpad]
+
+            if checksum32(data) != entry.check:
+                raise ChecksumError(entry.name)
+        else:
+            self.fileobj.read(entry.size + dpad)
+
+        return entry
+
     def _read_magic(self):
         """."""
         if self.fileobj.readable():
             magic = self.fileobj.read(6)
             self.fileobj.seek(0)
 
-            if magic in (MAGIC_NEW, MAGIC_CRC, MAGIC_OLD):
-                return magic
-            if struct.unpack('H', magic[:2])[0] == MAGIC_BIN:
-                return MAGIC_BIN
             if magic == '':
                 return None
+            if magic in (NEW_FORMAT, CRC_FORMAT, OLD_FORMAT):
+                return magic
+            if struct.unpack('H', magic[:2])[0] == BIN_FORMAT:
+                return BIN_FORMAT
 
             raise HeaderError('unknown format')
         else:
             return None
 
-    def _read(self):
-        """."""
-        header = self.struct.unpack(self.fileobj.read(self.struct.size))
-        entry = CpioEntry(self)
+    def _write_entry(self, entry, data=None):
+        """Write *entry*, which should be a CpioEntry object."""
+#        if path:
+#            # write the data; regular files and symbolic links only
+#            if stat.S_ISREG(self.mode):
+#                with io.open(path, 'rb') as pathobj:
+#                    data = pathobj.read()
+#            elif stat.S_IFLNK(self.mode):
+#                # The target of a symbolic link is stored as file data
+#                data = os.readlink(path)
 
-        if self.format in (MAGIC_NEW, MAGIC_CRC):
-            # Reading the header, some values will be dynamic (eg c_namesize)
-            #c_magic = header[0]
-            entry.c_ino = int(header[1], 16)
-            entry.c_mode = int(header[2], 16)
-            entry.c_uid = int(header[3], 16)
-            entry.c_gid = int(header[4], 16)
-            entry.c_nlink = int(header[5], 16)
-            entry.c_mtime = int(header[6], 16)
-            entry.c_filesize = int(header[7], 16)
-            entry.c_dev = os.makedev(int(header[8], 16), int(header[9], 16))
-            entry.c_rdev = os.makedev(int(header[10], 16), int(header[11], 16))
-            c_namesize = int(header[12], 16)
-            entry.c_check = int(header[13], 16)
+#            # checksum
+#            if self.magic == CRC_FORMAT and stat.S_ISREG(self.mode):
+#                self.check = checksum32(data)
 
-            # Read the name, exclude trailing NUL byte and header padding
-            hpad = (4 - (110 + c_namesize) % 4) % 4
-            entry.name = self.fileobj.read(c_namesize + hpad)[:-hpad + -1]
-            entry.offset = self.fileobj.tell()
-
-            # Reading the file data. Checksum if necessary.
-            dpad = (4 - entry.c_filesize % 4) % 4
-
-            if self.format == MAGIC_CRC and stat.S_ISREG(entry.c_mode):
-                data = self.fileobj.read(entry.c_filesize + dpad)[:-dpad]
-
-                if checksum32(data) != entry.c_check:
-                    raise ChecksumError(entry.name)
-            else:
-                self.fileobj.read(entry.c_filesize + dpad)
-        elif self.format == MAGIC_OLD:
-            #c_magic = header[0]
-            entry.c_dev = int(header[1], 8)
-            entry.c_ino = int(header[2], 8)
-            entry.c_mode = int(header[3], 8)
-            entry.c_uid = int(header[4], 8)
-            entry.c_gid = int(header[5], 8)
-            entry.c_nlink = int(header[6], 8)
-            entry.c_rdev = int(header[7], 8)
-            entry.c_mtime = int(header[8], 8)
-            c_namesize = int(header[9], 8)
-            entry.c_filesize = int(header[10], 8)
-
-            entry.name = self.fileobj.read(c_namesize)[:-1]
-            entry.offset = self.fileobj.tell()
-            self.fileobj.read(entry.c_filesize)
-        elif self.format == MAGIC_BIN:
-            #c_magic = header[0]
-            entry.c_dev = header[1]
-            entry.c_ino = header[2]
-            entry.c_mode = header[3]
-            entry.c_uid = header[4]
-            entry.c_gid = header[5]
-            entry.c_nlink = header[6]
-            entry.c_rdev = header[7]
-            entry.c_mtime = header[8] * 256 * 256 + header[9]
-            c_namesize = header[10]
-            entry.c_filesize = header[11] * 256 * 256 + header[12]
-
-            hpad = (2 - (self.struct.size + c_namesize) % 2) % 2
-            entry.name = self.fileobj.read(c_namesize + hpad)[:-hpad + -1]
-            entry.offset = self.fileobj.tell()
-
-            dpad = (2 - entry.c_filesize % 2) % 2
-            self.fileobj.read(entry.c_filesize + dpad)
-
-        return entry
-
-    #FIXME
-    def _write(self, entry, data=None):
-        """."""
+#            self.fileobj.write(data + ''.rjust(dpad, '\0'))
 
         if data is not None:
-            if stat.S_ISREG(entry.c_mode) or stat.S_ISLNK(entry.c_mode):
+            if stat.S_ISREG(entry.mode) or stat.S_ISLNK(entry.mode):
                 pass
-            if self.checksum and stat.S_ISREG(entry.c_mode):
-                entry.c_check = checksum32(data)
+            if self.checksum and stat.S_ISREG(entry.mode):
+                entry.check = checksum32(data)
 
-        if self.format in (MAGIC_NEW, MAGIC_CRC):
-            hdr_pad = (4 - (self.struct.size + entry.c_namesize) % 4) % 4
-            data_pad = (4 - entry.c_filesize % 4) % 4
+        self.fileobj.write(str(entry))
 
-            self.fileobj.write(
-                ''.join([
-                    entry.c_magic,
-                    '{:0>8x}'.format(entry.c_ino),
-                    '{:0>8x}'.format(entry.c_mode),
-                    '{:0>8x}'.format(entry.c_uid),
-                    '{:0>8x}'.format(entry.c_gid),
-                    '{:0>8x}'.format(entry.c_nlink),
-                    '{:0>8x}'.format(entry.c_mtime),
-                    '{:0>8x}'.format(entry.c_filesize),
-                    '{:0>8x}'.format(os.major(entry.c_dev)),
-                    '{:0>8x}'.format(os.minor(entry.c_dev)),
-                    '{:0>8x}'.format(os.major(entry.c_rdev)),
-                    '{:0>8x}'.format(os.minor(entry.c_rdev)),
-                    '{:0>8x}'.format(entry.c_namesize),
-                    '{:0>8x}'.format(entry.c_check),
-                    entry.name, '\0',
-                    ''.rjust(hdr_pad, '\0'),
-                    data,
-                    ''.rjust(data_pad, '\0')]))
-        elif self.format == MAGIC_OLD:
-            self.fileobj.write(
-                ''.join([
-                    entry.c_magic,
-                    '{:0>6o}'.format(entry.c_dev),
-                    '{:0>6o}'.format(entry.c_ino),
-                    '{:0>6o}'.format(entry.c_mode),
-                    '{:0>6o}'.format(entry.c_uid),
-                    '{:0>6o}'.format(entry.c_gid),
-                    '{:0>6o}'.format(entry.c_nlink),
-                    '{:0>6o}'.format(entry.c_rdev),
-                    '{:0>11o}'.format(entry.c_mtime),
-                    '{:0>6o}'.format(entry.c_namesize),
-                    '{:0>11o}'.format(entry.c_filesize),
-                    entry.name, '\0',
-                    data]))
-        elif self.format == MAGIC_BIN:
-            hdr_pad = (2 - (self.struct.size + entry.c_namesize) % 2) % 2 + 1
-            data_pad = (2 - entry.c_filesize % 2) % 2
-
-            self.fileobj.write(
-                ''.join([
-                    '{:0>16b}'.format(entry.c_magic),
-                    '{:0>16b}'.format(entry.c_dev),
-                    '{:0>16b}'.format(entry.c_ino),
-                    '{:0>16b}'.format(entry.c_mode),
-                    '{:0>16b}'.format(entry.c_uid),
-                    '{:0>16b}'.format(entry.c_gid),
-                    '{:0>16b}'.format(entry.c_nlink),
-                    '{:0>16b}'.format(entry.c_rdev),
-                    '{:0>32b}'.format(entry.c_mtime),
-                    '{:0>16b}'.format(entry.c_namesize),
-                    '{:0>32b}'.format(entry.c_filesize),
-                    entry.name, '\0',
-                    ''.rjust(hdr_pad, '\0'),
-                    data,
-                    ''.rjust(data_pad, '\0')]))
+        if data:
+            self.fileobj.write(data)
 
     def close(self):
         """Flush and close this stream."""
@@ -431,8 +431,8 @@ class CpioArchive(object):
         """True if the stream is closed."""
         return self.fileobj is None
 
-    #FIXME: everything
-    def extract(self, name, path=None):
+    #FIXME: just broken, OS support
+    def extract(self, entry, path=None):
         """Extract an entry from the archive.
 
         The *name* argument should be the entry's pathname.
@@ -441,26 +441,33 @@ class CpioArchive(object):
         current working directory, where the file will be extracted.  When
         extracting a single file
         """
-        # Retrieve the entry
-        entry = self.get_entry(name)
-        path = os.path.join(path or os.getcwd(), name)
+        # get entry by name
+        if not isinstance(entry, CpioEntry):
+            for candidate in self:
+                if candidate.name == entry:
+                    entry = candidate
+
+        path = os.path.join(path or os.getcwd(), entry.name)
 
         # Create a file on disk for the appropriate type
-        if stat.S_ISDIR(entry.c_mode):
-            mode = int(oct(entry.c_mode)[-4:], 8)
-            os.mkdir(path, mode)
-        elif stat.S_ISREG(entry.c_mode):
-            with io.open(path, 'wb') as target:
+        if stat.S_ISDIR(entry.mode):
+            os.mkdir(path, entry.mode & 0777)
+        elif stat.S_ISREG(entry.mode):
+            with io.open(path, 'wb') as pathobj:
                 entry.seek(0)
-                target.write(entry.read())
+                pathobj.write(entry.read())
         # Symbolic link targets are stored as file data
         elif stat.S_ISLNK(entry.mode):
             entry.seek(0)
             os.symlink(entry.read(), path)
-        # All other types will be created with os.mknod() FIXME: formats
+        #FIXME: All other types will be created with os.mknod()
         else:
-            device = entry.c_dev
-            os.mknod(path, entry.c_mode, device)
+            os.mknod(path, entry.mode, entry.dev)
+
+    def extractall(self, path=None):
+        """."""
+        for entry in self:
+            self.extract(entry, path)
 
     def fileno(self):
         """Invoke the underlying file object's fileno() method."""
@@ -475,108 +482,35 @@ class CpioArchive(object):
 
     @property
     def format(self):
-        """."""
         return self._format
 
     @format.setter
     def format(self, value):
         """."""
-        if value in (MAGIC_NEW, MAGIC_CRC):
-            self.struct = struct.Struct(_STRUCT_NEW)
-        elif value == MAGIC_OLD:
-            self.struct = struct.Struct(_STRUCT_OLD)
-        elif value == MAGIC_BIN:
-            #raise Error('old binary format not yet supported')
-            self.struct = struct.Struct(_STRUCT_BIN)
+        if value in (NEW_FORMAT, CRC_FORMAT):
+            self.struct = struct.Struct('6s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s')
+        elif value == OLD_FORMAT:
+            self.struct = struct.Struct('6s 6s 6s 6s 6s 6s 6s 6s 11s 6s 11s')
+        elif value == BIN_FORMAT:
+            self.struct = struct.Struct('H H H H H H H H H H H H H')
         else:
             raise Error('unsupported format')
 
         self._format = value
 
-
     def namelist(self):
         """Return a list of entry names."""
         return [entry.name for entry in self]
 
-    #FIXME
-    def readable(self):
-        """Return True if the stream can be read from."""
-        return self.mode is 'rb'
-
-    #FIXME
-    def seekable(self):
-        """Return True if the stream supports random access."""
-        return self.fileobj.seekable()
-
-    #FIXME
-    def write(self, path, header=None):
-        """
-        Write the file *path* to the archive. :meth:`os.lstat()` will be
-        called to populate the cpio header fields.
-
-        If given, *header* should be a dictionary object or an iterable of
-        key/value pairs to be used to amend the header fields.
-        """
-
-        st = os.lstat(path)
-        entry = CpioEntry(self)
-        entry.c_ino = st.st_ino
-        entry.c_mode = st.st_mode
-        entry.c_uid = st.st_uid
-        entry.c_gid = st.st_gid
-        entry.c_nlink = st.st_nlink
-        entry.c_mtime = st.st_mtime
-        entry.c_filesize = st.st_size
-        entry.c_dev = st.st_dev
-
-        # st_rdev may not be available on non-Linux systems
-        try:
-            entry.c_rdev = st.st_rdev
-        except AttributeError:
-            pass
-
-        entry.name = path
-
-        # write the data; regular files and symbolic links only
-        #if stat.S_ISREG(entry.c_mode):
-        #    with io.open(path, 'rb') as fobject:
-        #        data = fobject.read()
-        #elif stat.S_IFLNK(entry.mode):
-        #    # The target of a symbolic link is stored as file data
-        #    data = os.readlink(path)
-
-
-        ########### check header
-
-        # duplcate named entries are not allowed
-        if entry.name in self.namelist():
-            raise ValueError('file %s already exists' % entry.name)
-
-        if header:
-            entry.__dict__.update(header)
-
-        self._write_entry(entry)
-        self._entries.append(entry)
-
-    #FIXME
-    def writable(self):
-        """Return True if the stream can be written to."""
-        return self.mode is 'wb'
-
-    @property
-    def size(self):
-        """Size of the archive in bytes."""
-        original_position = self.fileobj.tell()
-        self.fileobj.read()
-        size = self.fileobj.tell()
-        self.fileobj.seek(original_position)
-
-        return size
+    def write(self, path, **hdr):
+        """."""
+        pass
 
 
 def main():
     """."""
-    with CpioArchive('test.bcpio', 'rb') as cpio:
+    with CpioArchive('test.cpio', 'rb') as cpio:
+        #cpio.extractall('test')
         print cpio.namelist()
 
 
