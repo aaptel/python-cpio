@@ -32,7 +32,14 @@ import stat
 import struct
 
 
-__all__ = ['is_cpioarchive', 'CpioArchive', 'CpioEntry']
+__all__ = [
+    'is_cpioarchive',
+    'ChecksumError',
+    'CpioFile',
+    'CpioInfo',
+    'Error',
+    'FormatError',
+    'HeaderError']
 
 
 BIN_FORMAT = 070707
@@ -40,9 +47,9 @@ OLD_FORMAT = '070707'
 NEW_FORMAT = '070701'
 CRC_FORMAT = '070702'
 
-BIN_STRUCT = 'H H H H H H H H HH H HH'
-OLD_STRUCT = '6s 6s 6s 6s 6s 6s 6s 6s 11s 6s 11s'
-NEW_STRUCT = '6s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s'
+BIN_STRUCT = '>H H H H H H H H H H H H H'
+OLD_STRUCT = '=6s 6s 6s 6s 6s 6s 6s 6s 11s 6s 11s'
+NEW_STRUCT = '=6s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s'
 
 
 def is_cpioarchive(self, path):
@@ -78,10 +85,50 @@ class ChecksumError(HeaderError):
     pass
 
 
-class CpioEntry(object):
+class FormatError(HeaderError):
+    """Raised when a file is in a unknown or unsupported format."""
+    pass
+
+
+class CpioInfo2(object):
+    """."""
+
+    def __init__(self, cpio):
+        """."""
+        self.fileobj = cpio.fileobj
+        self.filepos = None
+        self.offset = None
+
+        self.dev = 0
+        """Number of the device the inode resides on."""
+        self.ino = 0
+        """Inode number on disk."""
+        self.mode = 0
+        """Inode protection mode."""
+        self.uid = 0
+        """User id of the owner."""
+        self.gid = 0
+        """Group id of the owner."""
+        self.nlink = 0
+        """Number of links to the inode."""
+        self.mtime = 0
+        """Time of last modification."""
+        self.rdev = 0
+        """Number of the device type."""
+        self.size = 0
+        """Size of the file data in bytes."""
+        self.check = 0
+        """32-bit checksum of the file data (New CRC format only)."""
+        self.name = 'TRAILER!!!'
+        """Pathname of the entry."""
+
+
+class CpioInfo(object):
     """
-    CpioEntry provides a read-only file-like object, unified to represent
-    different cpio formats.
+    CpioInfo provides a simplistic file object to represent a cpio entry.  It
+    provides a unified set of attributes to represent different cpio formats
+    and supports read(), seek() and tell() operations for entries which are
+    regular files.
     """
 
     __slots__ = [
@@ -103,8 +150,8 @@ class CpioEntry(object):
     def __init__(self, fileobj):
         """."""
         self.fileobj = fileobj
-        self.filepos = self.fileobj.tell()
-        self.offset = 0
+        self.filepos = None
+        self.offset = None
 
         self.dev = 0
         """Number of the device the inode resides on."""
@@ -174,14 +221,14 @@ class CpioEntry(object):
             return True
 
 
-class CpioArchive(object):
+class CpioFile(object):
     """
-    CpioArchive is a file-like object that acts as a container of CpioEntry
+    CpioFile is a file-like object that acts as a container of CpioInfo
     objects, which in turn allow read or write access to the actual file data.
     """
 
     def __init__(self, path=None, mode=None, fileobj=None, format=NEW_FORMAT):
-        """Constructor for the CpioArchive class.
+        """Constructor for the CpioFile class.
 
         Either *fileobj* or *path* must be given a non-trivial value.
 
@@ -226,7 +273,7 @@ class CpioArchive(object):
     def _fix_hardlinks(self):
         """Amend the file metrics of hardlink entries."""
         if self.format in (NEW_FORMAT, CRC_FORMAT):
-            hardlinks = [entry for entry in self if entry._ishardlink()]
+            hardlinks = [e for e in self if e._ishardlink()]
 
             inodes = [entry for entry in hardlinks if entry.size > 0]
             links = [entry for entry in hardlinks if entry.size == 0]
@@ -250,12 +297,15 @@ class CpioArchive(object):
 
     def _read_entry(self):
         """."""
-        entry = CpioEntry(self.fileobj)
+        print self.struct.size
 
         try:
             hdr = self.struct.unpack(self.fileobj.read(self.struct.size))
         except struct.error:
+            print self.namelist()
             raise HeaderError('incomplete header')
+
+        entry = CpioInfo(self.fileobj)
 
         if self.format in (NEW_FORMAT, CRC_FORMAT):
             #entry.magic = hdr[0]
@@ -271,7 +321,7 @@ class CpioArchive(object):
             namesize = int(hdr[12], 16)
             entry.check = int(hdr[13], 16)
 
-            # the header and data are NUL padded to a multiple of 4-bytes
+            # NEW header and data are NUL padded to a multiple of 4-bytes
             hpad = (4 - (110 + namesize) % 4) % 4
             dpad = (4 - entry.size % 4) % 4
         elif self.format == OLD_FORMAT:
@@ -287,6 +337,7 @@ class CpioArchive(object):
             namesize = int(hdr[9], 8)
             entry.size = int(hdr[10], 8)
 
+            # OLD header and data are unpadded
             hpad, dpad = 0, 0
         elif self.format == BIN_FORMAT:
             #entry.magic = hdr[0]
@@ -301,17 +352,17 @@ class CpioArchive(object):
             namesize = hdr[10]
             entry.size = hdr[11] * 256 + hdr[12]
 
-            # the header and data are NUL padded to a multiple of 2-bytes
+            # BIN header and data are NUL padded to a multiple of 2-bytes
             hpad = (2 - (26 + namesize) % 2) % 2
             dpad = (2 - entry.size % 2) % 2
 
         # Read the entry name; exclude the trailing NUL byte and padding
-        entry.name = self.fileobj.read(namesize + hpad)[:-1 + -hpad]
+        entry.name = self.fileobj.read(namesize + hpad)[:namesize - 1]
         entry.filepos = self.fileobj.tell()
 
         # Checksum regular files, otherwise read past the data and return
         if self.format == CRC_FORMAT and stat.S_ISREG(entry.mode):
-            data = self.fileobj.read(entry.size + dpad)[:-dpad]
+            data = self.fileobj.read(entry.size + dpad)[:entry.size]
 
             if checksum32(data) != entry.check:
                 raise ChecksumError(entry.name)
@@ -336,7 +387,7 @@ class CpioArchive(object):
             raise HeaderError('unknown format')
 
     def _write_entry(self, entry, data=None):
-        """Write *entry*, which should be a CpioEntry object."""
+        """Write *entry*, which should be a CpioInfo object."""
         if self.format in (NEW_FORMAT, CRC_FORMAT):
             hpad = (4 - (111 + len(entry.name)) % 4) % 4
             dpad = (4 - entry.size % 4) % 4
@@ -382,7 +433,7 @@ class CpioArchive(object):
 
             self.fileobj.write(
                 ''.join([
-                    entry.struct.pack(
+                    self.struct.pack(
                         self.format,
                         entry.dev,
                         entry.ino,
@@ -409,8 +460,8 @@ class CpioArchive(object):
         if self.fileobj is None:
             return
 
-        if self.fileobj.writable():
-            self._write_entry(CpioEntry(self.fileobj))
+        #if self.fileobj.writable():
+        #    self._write_entry(CpioInfo(self.fileobj))
 
         self.flush()
         self.fileobj = None
@@ -430,7 +481,7 @@ class CpioArchive(object):
         extracting a single file
         """
         # get entry by name
-        if not isinstance(entry, CpioEntry):
+        if not isinstance(entry, CpioInfo):
             for candidate in self:
                 if candidate.name == entry:
                     entry = candidate
@@ -476,7 +527,7 @@ class CpioArchive(object):
     def format(self, value):
         """."""
         if len(self._entries) > 0:
-            raise Error('can not change format')
+            raise FormatError('can not change format')
         if value in (NEW_FORMAT, CRC_FORMAT):
             self.struct = struct.Struct(NEW_STRUCT)
         elif value == OLD_FORMAT:
@@ -484,7 +535,7 @@ class CpioArchive(object):
         elif value == BIN_FORMAT:
             self.struct = struct.Struct(BIN_STRUCT)
         else:
-            raise Error('unsupported format')
+            raise FormatError('unsupported format')
 
         self._format = value
 
@@ -495,7 +546,7 @@ class CpioArchive(object):
     #FIXME
     def write(self, path, **kwargs):
         """."""
-        entry = CpioEntry(self.fileobj)
+        entry = CpioInfo(self.fileobj)
         pstat = os.lstat(path)
 
         entry.dev = pstat.st_dev
@@ -511,6 +562,10 @@ class CpioArchive(object):
         # not available on non-linux systems
         if hasattr(pstat, 'st_rdev'):
             entry.rdev = pstat.st_rdev
+
+        # update entry attributes with kwargs
+        for field in [k for k in kwargs.keys() if hasattr(entry, k)]:
+            entry.__dict__[field] = kwargs[field]
 
         # write the data; regular files and symbolic links only
         if stat.S_ISREG(self.mode):
@@ -530,9 +585,10 @@ class CpioArchive(object):
 
 
 #FIXME: command line interface
+
 def main():
     """."""
-    with CpioArchive('test.ocpio', 'rb') as cpio:
+    with CpioFile('test.bin.cpio', 'rb') as cpio:
         #cpio.extractall('test')
         print cpio.namelist()
 
