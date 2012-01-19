@@ -20,40 +20,6 @@
 The CPIO file format is a common UNIX archive standard which collects file
 system objects into a single stream of bytes.  This module provides tools to
 create, read and write CPIO archives.
-
-This module currently supports the formats described by the following
-constants:
-
-.. autodata:: NEW_MAGIC
-.. autodata:: CRC_MAGIC
-.. autodata:: OLD_MAGIC
-.. autodata:: BIN_MAGIC
-
-The :mod:`cpio` module provides reasonably fine-grained error handling via the
-following exceptions:
-
-.. autoexception:: Error
-.. autoexception:: HeaderError
-.. autoexception:: ChecksumError
-.. autoexception:: FormatError
-
-Application Protocol Interface
-------------------------------
-
-.. autoclass:: CpioFile
-    :members:
-.. autoclass:: CpioEntry
-    :members:
-
-Command Line Interface
-----------------------
-
-Some stuff
-
-Examples
---------
-
-Some simple examples
 """
 
 # psyco JIT compiler support
@@ -74,11 +40,11 @@ __all__ = [
     'is_cpioarchive',
     'CpioFile',
     'CpioEntry',
+    'InitRAMFS',
     'Error',
     'HeaderError',
     'ChecksumError',
-    'FormatError',
-    'NEW_MAGIC']
+    'FormatError']
 
 NEW_MAGIC = '070701'
 """*undocumented*"""
@@ -146,10 +112,6 @@ class CpioEntry(object):
     formats.  If the member is a regular file it will supports :meth:`read()`,
     :meth:`seek()` and :meth:`tell()` operations; if it is a symbolic link the
     target will be available as :attr:`target`.
-
-    .. note::
-        The :mod:`stat` module provides functions to test for specific file
-        types that may be performed on the :attr:`mode` attribute.
     """
 
     __slots__ = ['dev', 'ino', 'mode', 'uid', 'gid', 'nlink', 'mtime', 'rdev',
@@ -170,7 +132,10 @@ class CpioEntry(object):
         self.ino = 0
         """Inode number on disk."""
         self.mode = 0
-        """Inode protection mode."""
+        """Inode protection mode.
+
+        .. note::
+            The :mod:`stat` module provides functions that may be useful."""
         self.uid = 0
         """User id of the owner."""
         self.gid = 0
@@ -451,9 +416,6 @@ class CpioFile(object):
                 member = CpioEntry(self.fileobj)
                 member.from_fileobj()
 
-            if self.format in (NEW_MAGIC, CRC_MAGIC):
-                self._fix_hardlinks()
-
     def __enter__(self):
         return self
 
@@ -467,26 +429,6 @@ class CpioFile(object):
     def __repr__(self):
         s = repr(self.fileobj)
         return '<cpio ' + s[1:-1] + ' ' + hex(id(self)) + '>'
-
-    def _fix_hardlinks(self):
-        """Amend the file metrics of hardlink members."""
-        islink = lambda e: e.nlink > 1 and not stat.S_ISDIR(e.mode)
-        hasdata = lambda e: islink(e) and e.size > 0
-
-        for inode in [member for member in self if hasdata(member)]:
-            for link in [member for member in self if not hasdata(member)]:
-                if link.ino == inode.ino and link.dev == inode.dev:
-                    link.filepos = inode.filepos
-                    link.size = inode.size
-                    link.nlink = 1
-
-    def add(self):
-        """*undocumented*"""
-        pass
-
-    def addfile(self):
-        """*undocumented*"""
-        pass
 
     #FIXME
     def close(self):
@@ -533,6 +475,7 @@ class CpioFile(object):
         # Create a file on disk for the appropriate type
         if stat.S_ISDIR(member.mode):
             os.mkdir(path, member.mode & 0777)
+        #FIXME: hardlinks
         elif stat.S_ISREG(member.mode):
             with io.open(path, 'wb') as pathobj:
                 member.seek(0)
@@ -564,13 +507,14 @@ class CpioFile(object):
 
     #FIXME
     def flush(self):
-        """Write a trailer member, if writable(), and flush the file-object"""
+        """Flush the file-object"""
         self.fileobj.flush()
 
     def namelist(self):
         """Return a list of member names."""
         return [member.name for member in self]
 
+    #FIXME
     def readable(self):
         return self.fileobj.readable()
 
@@ -595,8 +539,9 @@ class CpioFile(object):
             member.rdev = pstat.st_rdev
 
         # FIXME: update member attributes with kwargs
-        for key in [key for key in kwargs.keys() if hasattr(member, key)]:
-            member.__dict__[key] = kwargs[key]
+        for key in kwargs.keys():
+            if hasattr(member, key)]:
+                member.__setattribute__(key, kwargs[key])
 
         # write the data; regular files and symbolic links only
         if stat.S_ISREG(self.mode):
@@ -605,21 +550,26 @@ class CpioFile(object):
                 if self.format == CRC_MAGIC:
                     data = pathobj.read()
                     member.check = checksum32(data)
-                    self._write_member(member, data)
+                    member.to_fileobj(member, self.format, data)
                 else:
-                    self._write_member(member, pathobj.read())
+                    member.to_fileobj(member, self.format, pathobj.read())
         # The target of a symbolic link is stored as file data
         elif stat.S_IFLNK(self.mode):
-            self._write_member(member, os.readlink(path))
+            member.to_fileobj(member, self.format, os.readlink(path))
 
         self._members.append(member)
+
+
+class InitRAMFS(CpioFile):
+    """*undocumented*"""
+    pass
 
 
 #FIXME: command line interface
 
 def main():
     """*undocumented*"""
-    with CpioFile('test.bin.cpio') as cpio:
+    with CpioFile('test.newc.cpio') as cpio:
         #cpio.extractall('test')
         print cpio.namelist()
 
