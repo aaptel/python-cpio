@@ -1,0 +1,236 @@
+"cpio" --- Read and write cpio archive files
+********************************************
+
+The CPIO file format is a common UNIX archive standard which collects
+file system objects into a single stream of bytes.  This module
+provides tools to create, read and write CPIO archives.
+
+This module currently supports the formats described by the following
+constants:
+
+cpio.NEW_MAGIC = '070701'
+
+   *undocumented*
+
+cpio.CRC_MAGIC = '070702'
+
+   *undocumented*
+
+cpio.OLD_MAGIC = '070707'
+
+   *undocumented*
+
+cpio.BIN_MAGIC = 29127
+
+   *undocumented*
+
+The "cpio" module provides reasonably fine-grained error handling via
+the following exceptions:
+
+exception exception cpio.Error
+
+   Base class for cpio exceptions
+
+exception exception cpio.HeaderError
+
+   The base class for header errors.  Both "ChecksumError" and
+   "FormatError" inherit from this exception.
+
+exception exception cpio.ChecksumError
+
+   Raised when a checksum of an member's data doesn't match its
+   header.
+
+exception exception cpio.FormatError
+
+   This may be raised by CpioEntry when an unsupported format is
+   encountered or by CpioFile if an unexpected format change is
+   detected mid-archive.
+
+
+Application Protocol Interface
+==============================
+
+class class cpio.CpioFile(path=None, mode='rb', fileobj=None, format=None)
+
+   CpioFile is a file-like object that acts as a container of
+   CpioEntry objects, which in turn allow access to the attributes and
+   data.
+
+   The new class instance is based on *fileobj*, which may be any
+   binary mode file object which supports read(), write() and seek()
+   methods. If *fileobj* is None then *path* will be used to provide a
+   file object.
+
+   The *mode* argument must be either 'rb' or 'wb'.  The default is
+   'rb' either if *path* is given or if *fileobj* is read-write.
+
+   The *format* argument should be one of "NEW_MAGIC", "CRC_MAGIC",
+   "OLD_MAGIC" or "BIN_MAGIC".
+
+   add()
+
+      *undocumented*
+
+   addfile()
+
+      *undocumented*
+
+   close()
+
+      Close the "CpioFile". In write-mode, a trailer is appended to
+      the archive.
+
+   closed()
+
+      True if the stream is closed.
+
+   extract(member, path='.')
+
+      Extract an member from the archive.
+
+      The *member* argument should be the member's pathname or a
+      CpioEntry object.
+
+      The *path* argument is a path to a directory, defaulting to the
+      current working directory, where the file will be extracted.
+
+      Warning: Never extract archives from untrusted sources without prior
+        inspection. It is possible that files are created outside of
+        path, e.g. members that have absolute filenames starting with
+        "/" or filenames with two dots "..".
+
+   extractall(path=None)
+
+      Extract all members from the archive to the current working
+      directory or directory path.
+
+      Warning: See the warning for "extract()".
+
+   extractfile(member)
+
+      *undocumented*
+
+   fileno()
+
+      Invoke the underlying file object's fileno() method.
+
+   flush()
+
+      Write a trailer member, if writable(), and flush the file-object
+
+   namelist()
+
+      Return a list of member names.
+
+   write(path, **kwargs)
+
+      *undocumented*
+
+   format = None
+
+      *undocumented*
+
+class class cpio.CpioEntry(fileobj)
+
+   CpioEntry provides a unified set of attributes to represent
+   different cpio formats.  If the member is a regular file it will
+   supports "read()", "seek()" and "tell()" operations; if it is a
+   symbolic link the target will be available as "target".
+
+   Note: The "stat" module provides functions to test for specific file
+     types that may be performed on the "mode" attribute.
+
+   *fileobj* may be any binary mode file object which supports read(),
+   write() and seek() methods.
+
+   from_fileobj()
+
+      *undocumented*
+
+   read(n=-1)
+
+      Read *n* bytes from the member.
+
+      Note: "io.UnsupportedOperation" will be raised if the member is not
+        a regular file.
+
+   seek(offset, whence=0)
+
+      Change the stream position to the given byte *offset*, relative
+      to the position indicated by *whence* and return the absolute
+      position. See "seek()" in the "io" module.
+
+      Note: "io.UnsupportedOperation" will be raised if the member is not
+        a regular file.
+
+   tell()
+
+      Return the current stream position.
+
+      Note: "io.UnsupportedOperation" will be raised if the member is not
+        a regular file.
+
+   to_fileobj(format, data=None)
+
+      Write the member in *format*.
+
+   check
+
+      32-bit checksum of the file data (New CRC format only).
+
+   dev
+
+      Number of the device the inode resides on.
+
+   gid
+
+      Group id of the owner.
+
+   ino
+
+      Inode number on disk.
+
+   mode
+
+      Inode protection mode.
+
+   mtime
+
+      Time of last modification.
+
+   name
+
+      Pathname of the member.
+
+   nlink
+
+      Number of links to the inode.
+
+   rdev
+
+      Number of the device type.
+
+   size
+
+      Size of the file data in bytes.
+
+   target
+
+      The target path (symbolic links only).
+
+   uid
+
+      User id of the owner.
+
+
+Command Line Interface
+======================
+
+Some stuff
+
+
+Examples
+========
+
+Some simple examples
