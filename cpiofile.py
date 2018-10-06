@@ -56,7 +56,7 @@ BIN_MAGIC = 0o070707
 NEW_STRUCT = '=6s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s 8s'
 OLD_STRUCT = '=6s 6s 6s 6s 6s 6s 6s 6s 11s 6s 11s'
 BIN_STRUCT = '13H'
-
+LAST_ENTRY_NAME = b'TRAILER!!!'
 
 #------------------------------------------------------------------------------
 # cpiofile Constants
@@ -186,7 +186,7 @@ class CpioInfo(object):
         """32-bit checksum of the file data (New CRC format only)."""
         self.link = None
         """The target path (symbolic links only)."""
-        self.name = b'TRAILER!!!'
+        self.name = LAST_ENTRY_NAME
         """Pathname of the member."""
 
     def __getattr__(self, name):
